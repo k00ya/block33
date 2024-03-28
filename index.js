@@ -5,161 +5,179 @@ const client = new pg.Client(
   process.env.DATABASE_URL || "postgres://localhost/acme_hr_db"
 );
 
-//parse body into JS objects
+// Enable JSON body parsing for incoming requests
 app.use(express.json());
 
-//log the requests as they come in
+// Add request logging middleware for better debugging
 app.use(require("morgan")("dev"));
 
-//Routes
+// Define API routes
 
-//Read employees
+// Endpoint to retrieve all employees
 app.get("/api/employees", async (req, res, next) => {
   try {
-    const SQL = `
-        SELECT * FROM employees;
-        `;
-    const response = await client.query(SQL);
-    res.send(response.rows);
-  } catch (ex) {
-    next(ex);
+    // Query to fetch all employees from the database
+    const queryText = `SELECT * FROM employees;`;
+    const queryResult = await client.query(queryText);
+    // Send the retrieved employees back to the client
+    res.send(queryResult.rows);
+  } catch (error) {
+    // Handle any errors that occur during the query
+    next(error);
   }
 });
 
-//Read departments
+// Endpoint to get a list of all departments
 app.get("/api/departments", async (req, res, next) => {
   try {
-    const SQL = `
-        SELECT * FROM departments;
-        `;
-    const response = await client.query(SQL);
-    res.send(response.rows);
-  } catch (ex) {
-    next(ex);
+    // Execute query to select all departments
+    const queryText = `SELECT * FROM departments;`;
+    const queryResult = await client.query(queryText);
+    // Respond with the list of departments
+    res.send(queryResult.rows);
+  } catch (error) {
+    // Pass errors to the error handler
+    next(error);
   }
 });
 
-//create employee
+// Endpoint for adding a new employee
 app.post("/api/employees", async (req, res, next) => {
   try {
+    // Destructure name and department ID from the request body
     const { name, department_id } = req.body;
-    const SQL = `
-            INSERT INTO employees (name, department_id)
-            VALUES($1, $2)
-            RETURNING *;
-        `;
-
-    const response = await client.query(SQL, [name, department_id]);
-    res.status(201).json(response.rows[0]);
-  } catch (ex) {
-    next(ex);
+    // SQL query to insert the new employee into the database
+    const queryText = `INSERT INTO employees (name, department_id) VALUES ($1, $2) RETURNING *;`;
+    const queryResult = await client.query(queryText, [name, department_id]);
+    // Respond with the newly created employee
+    res.status(201).json(queryResult.rows[0]);
+  } catch (error) {
+    // Forward any errors to the next middleware
+    next(error);
   }
 });
 
-//Delete employee
+// Endpoint to delete an employee by ID
 app.delete("/api/employees/:id", async (req, res, next) => {
   const { id } = req.params;
   try {
-    const SQL = `
-        DELETE FROM employees WHERE id = $1;
-        `;
-    await client.query(SQL, [id]);
+    // Prepare and execute the SQL command to remove an employee
+    const queryText = `DELETE FROM employees WHERE id = $1;`;
+    await client.query(queryText, [id]);
+    // Confirm the deletion with a 204 No Content response
     res.sendStatus(204);
-  } catch (ex) {
-    next(ex);
+  } catch (error) {
+    // Error handling for failed deletion attempts
+    next(error);
   }
 });
 
-//Update employee
+// Listen for incoming requests
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+  // Connect to the database when the server starts
+  client.connect().then(() => console.log("Connected successfully to the database"));
+});
+
+
+// Endpoint for modifying employee details
 app.put("/api/employees/:id", async (req, res, next) => {
-  const { id } = req.params;
-  const { name, department_id } = req.body;
-  try {
-    const SQL = `
+    // Extract the employee ID from the request URL
+    const { id } = req.params;
+    // Extract updated name and department_id from the request body
+    const { name, department_id } = req.body;
+  
+    try {
+      // Prepare the update SQL statement
+      const updateQuery = `
         UPDATE employees
-        SET name = $1, department_id = $2, updated_at = now()
+        SET name = $1, department_id = $2, updated_at = CURRENT_TIMESTAMP
         WHERE id = $3
         RETURNING *;
-        `;
-    const response = await client.query(SQL, [name, department_id, id]);
-
-    if (!response.rows[0]) {
-      return res.status(404).json({ error: "Employee not found" });
+      `;
+      // Execute the update query with parameters
+      const updateResult = await client.query(updateQuery, [name, department_id, id]);
+  
+      // If the employee does not exist, send a 404 response
+      if (updateResult.rows.length === 0) {
+        return res.status(404).send({ message: "Employee not found" });
+      }
+  
+      // Send the updated employee data
+      res.json(updateResult.rows[0]);
+    } catch (error) {
+      // Handle any errors during the update process
+      next(error);
     }
+  });
+  
+  // Central error handling middleware
+  app.use((error, req, res, next) => {
+    // Log the error for server-side debugging
+    console.error("Error encountered:", error.stack);
+    // Send a generic error response
+    res.status(500).send({ message: "Internal Server Error" });
+  });
+  
 
-    res.json(response.rows[0]);
-  } catch (ex) {
-    next(ex);
-  }
-});
-
-//Error handling route
-app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(500).json({ error: "Internal Service Error" });
-});
-
-const init = async () => {
-  try {
-    await client.connect();
-    console.log("Connected to database");
-
-    //drop tables if they exist
-    await client.query("DROP TABLE IF EXISTS employees CASCADE");
-    await client.query("DROP TABLE IF EXISTS departments CASCADE");
-
-    //create departments table
-    let SQL = `
+  const init = async () => {
+    try {
+      // Establishing connection to the PostgreSQL database
+      await client.connect();
+      console.info("Successfully connected to the database.");
+  
+      // Cleaning up existing data structure
+      await client.query("DROP TABLE IF EXISTS employees CASCADE;");
+      await client.query("DROP TABLE IF EXISTS departments CASCADE;");
+  
+      // Creating a new structure for departments
+      const createDepartmentsTableQuery = `
         CREATE TABLE departments (
-            id SERIAL PRIMARY KEY,
-            name VARCHAR(255) NOT NULL
+          id SERIAL PRIMARY KEY,
+          name VARCHAR(255) NOT NULL
         );
-    `;
-    await client.query(SQL);
-
-    //create employees table with FK reference to departments
-    SQL = `
-            CREATE TABLE employees (
-                id SERIAL PRIMARY KEY,
-                name VARCHAR(255) NOT NULL,
-                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-                department_id INTEGER REFERENCES departments(id) ON DELETE CASCADE
-            );
-            `;
-    await client.query(SQL);
-
-    console.log("Tables created");
-
-    //Seed tables with data
-
-    SQL = `
-        INSERT INTO departments (name) VALUES
-            ('HR'), ('Finance'), ('IT');
-    
-    `;
-    await client.query(SQL);
-
-    SQL = `
+      `;
+      await client.query(createDepartmentsTableQuery);
+  
+      // Establishing a structure for employees with a foreign key to departments
+      const createEmployeesTableQuery = `
+        CREATE TABLE employees (
+          id SERIAL PRIMARY KEY,
+          name VARCHAR(255) NOT NULL,
+          created_at TIMESTAMPTZ DEFAULT NOW(),
+          updated_at TIMESTAMPTZ DEFAULT NOW(),
+          department_id INTEGER REFERENCES departments(id) ON DELETE CASCADE
+        );
+      `;
+      await client.query(createEmployeesTableQuery);
+      console.info("Database tables have been successfully created.");
+  
+      // Populating the database with initial department data
+      await client.query(`
+        INSERT INTO departments (name) VALUES ('HR'), ('Finance'), ('IT');
+      `);
+  
+      // Adding initial employees to the database
+      await client.query(`
         INSERT INTO employees (name, department_id) VALUES
-            ('John Doe', 1),
-            ('Jane Smith', 2),
-            ('Bob Johnson', 3);
-        `;
-    await client.query(SQL);
-
-    console.log("Data seeded");
-
-    //start the server after initializing the database
-    const PORT = process.env.PORT || 3000;
-
-    app.listen(PORT, () => {
-      console.log(`Server is running on port ${PORT}`);
-    });
-  } catch (error) {
-    console.error(error);
-  }
-};
-
-//Initialize database
-init();
+        ('John Doe', 1),
+        ('Jane Smith', 2),
+        ('Bob Johnson', 3);
+      `);
+      console.info("Initial data has been seeded into the database.");
+  
+      // Starting the Express server
+      const PORT = process.env.PORT || 3000;
+      app.listen(PORT, () => {
+        console.log(`Express server is now running on http://localhost:${PORT}`);
+      });
+    } catch (setupError) {
+      // Handling any errors that occur during initialization
+      console.error("An error occurred during the database initialization process:", setupError);
+    }
+  };
+  
+  // Kick off the initialization process
+  init();
+  
